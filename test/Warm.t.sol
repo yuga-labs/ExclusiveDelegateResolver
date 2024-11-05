@@ -90,7 +90,7 @@ contract WarmTest is Test {
         
         // Try to set same hot wallet from different cold wallet (should fail)
         vm.prank(coldWallet2);
-        vm.expectRevert("Hot wallet locked");
+        vm.expectRevert(Warm.HotWalletLocked.selector);
         warm.setHotWallet(hotWallet, type(uint256).max, false);
     }
 
@@ -194,8 +194,39 @@ contract WarmTest is Test {
         // This should fail
         address oneMoreWallet = address(uint160(0x2000));
         vm.prank(oneMoreWallet);
-        vm.expectRevert("Too many linked wallets");
+        vm.expectRevert(Warm.TooManyLinkedWallets.selector);
         warm.setHotWallet(hotWallet, type(uint256).max, false);
+    }
+
+    function test_CannotLinkToSelf() public {
+        vm.prank(coldWallet);
+        vm.expectRevert(Warm.CannotLinkToSelf.selector);
+        warm.setHotWallet(coldWallet, type(uint256).max, false);
+    }
+
+    function test_AlreadyLinked() public {
+        // Set initial link
+        vm.prank(coldWallet);
+        warm.setHotWallet(hotWallet, type(uint256).max, false);
+        
+        // Try to set same link again
+        vm.prank(coldWallet);
+        vm.expectRevert(Warm.AlreadyLinked.selector);
+        warm.setHotWallet(hotWallet, type(uint256).max, false);
+    }
+
+    function test_NoLinkExists() public {
+        vm.prank(hotWallet);
+        vm.expectRevert(Warm.NoLinkExists.selector);
+        warm.removeColdWallet(coldWallet);
+    }
+
+    function test_MismatchedOwnersAndIds() public {
+        address[] memory owners = new address[](2);
+        uint256[] memory ids = new uint256[](1);
+        
+        vm.expectRevert(Warm.MismatchedOwnersAndIds.selector);
+        warm.balanceOfBatch(address(mockERC1155), owners, ids);
     }
 
     function test_RemoveExpiredWalletLinks() public {

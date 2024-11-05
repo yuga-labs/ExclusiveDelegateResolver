@@ -50,6 +50,13 @@ interface IERC1155 {
  * link is desired, passing in type(uint256).max is recommended.
  */
 contract Warm is OwnableRoles {
+    error CannotLinkToSelf();
+    error AlreadyLinked();
+    error HotWalletLocked();
+    error TooManyLinkedWallets();
+    error NoLinkExists();
+    error MismatchedOwnersAndIds();
+
     uint256 public constant MAX_HOT_WALLET_COUNT = 128;
     uint256 public constant NOT_FOUND = type(uint256).max;
 
@@ -79,11 +86,11 @@ contract Warm is OwnableRoles {
     function setHotWallet(address hotWalletAddress, uint256 expirationTimestamp, bool lockHotWalletAddress) external {
         address coldWalletAddress = msg.sender;
 
-        require(coldWalletAddress != hotWalletAddress, "Can't link to self");
-        require(coldWalletToHotWallet[coldWalletAddress].walletAddress != hotWalletAddress, "Already linked");
+        require(coldWalletAddress != hotWalletAddress, CannotLinkToSelf());
+        require(coldWalletToHotWallet[coldWalletAddress].walletAddress != hotWalletAddress, AlreadyLinked());
 
         if (lockedHotWallets[hotWalletAddress]) {
-            require(coldWalletToHotWallet[coldWalletAddress].walletAddress == hotWalletAddress, "Hot wallet locked");
+            require(coldWalletToHotWallet[coldWalletAddress].walletAddress == hotWalletAddress, HotWalletLocked());
         }
 
         /**
@@ -99,7 +106,7 @@ contract Warm is OwnableRoles {
          */
         _removeColdWalletFromHotWallet(coldWalletAddress, currentHotWalletAddress);
         if (hotWalletAddress != address(0)) {
-            require(hotWalletToColdWallets[hotWalletAddress].length < MAX_HOT_WALLET_COUNT, "Too many linked wallets");
+            require(hotWalletToColdWallets[hotWalletAddress].length < MAX_HOT_WALLET_COUNT, TooManyLinkedWallets());
 
             _addColdWalletToHotWallet(coldWalletAddress, hotWalletAddress, expirationTimestamp);
 
@@ -111,7 +118,7 @@ contract Warm is OwnableRoles {
 
     function removeColdWallet(address coldWallet) external {
         address hotWalletAddress = msg.sender;
-        require(_findColdWalletIndex(coldWallet, hotWalletAddress) != NOT_FOUND, "No link exists");
+        require(_findColdWalletIndex(coldWallet, hotWalletAddress) != NOT_FOUND, NoLinkExists());
 
         _removeColdWalletFromHotWallet(coldWallet, hotWalletAddress);
         _setColdWalletToHotWallet(coldWallet, address(0), 0);
@@ -245,7 +252,7 @@ contract Warm is OwnableRoles {
         view
         returns (uint256[] memory)
     {
-        require(owners.length == ids.length, "Mismatched owners and ids");
+        require(owners.length == ids.length, MismatchedOwnersAndIds());
 
         IERC1155 erc1155Contract = IERC1155(contractAddress);
 
