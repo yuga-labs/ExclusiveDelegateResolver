@@ -4,398 +4,80 @@ pragma solidity ^0.8.28;
 import "solady/auth/OwnableRoles.sol";
 
 interface IERC721 {
-    function balanceOf(address _owner) external view returns (uint256);
     function ownerOf(uint256 _tokenId) external view returns (address);
+    function balanceOf(address owner) external view returns (uint256);
+    function balanceOf(address owner, uint256 id) external view returns (uint256);
+    function balanceOfBatch(address[] calldata owners, uint256[] calldata ids)
+        external
+        view
+        returns (uint256[] memory);
 }
 
 interface IERC1155 {
-    function balanceOf(address _owner, uint256 _id) external view returns (uint256);
-    function balanceOfBatch(address[] calldata _owners, uint256[] calldata _ids)
+    function balanceOf(address owner, uint256 id) external view returns (uint256);
+    function balanceOfBatch(address[] calldata owners, uint256[] calldata ids)
         external
         view
         returns (uint256[] memory);
 }
 
 /**
- * Enables setting a hot wallet as a proxy for your cold wallet, so that you
- * can submit a transaction from your cold wallet once, and other contracts can
- * use this contract to map ownership of an ERC721 or ERC1155 token to your hot wallet.
- *
- * NB: There is a fixed limit to the number of cold wallets that a single hot wallet can
- * point to. This is to avoid a scenario where an attacker could add so many links to a
- * hot wallet that the original cold wallet is no longer able to update their hot wallet
- * address because doing so would run out of gas.
- *
- * Additionally, we provide affordance for locking a hot wallet address so that this
- * attack's surface area can be further reduced.
- *
- * Example:
- *
- *   - Cold wallet 0x123 owns BAYC #456
- *   - Cold wallet 0x123 calls setHotWallet(0xABC)
- *   - Another contract that wants to check for BAYC ownership calls ownerOf(BAYC_ADDRESS, 456);
- *     + This contract calls BAYC's ownerOf(456)
- *     + This contract will see that BAYC #456 is owned by 0x123, which is mapped to 0xABC, and
- *     + returns 0xABC from ownerOf(BAYC_ADDRESS, 456)
- *
- * NB: With balanceOf and balanceOfBatch, this contract will look up the balance of both the cold
- * wallets and the requested wallet, _and return their sum_.
- *
- * To remove a hot wallet, you can either:
- *   - Submit a transaction from the hot wallet you want to remove, renouncing the link, or
- *   - Submit a transaction from the cold wallet, setting its hot wallet to address(0).
- *
- * When setting a link, there is also the option to pass an expirationTimestamp. This value
- * is in seconds since the epoch. Links will only be good until this time. If an indefinite
- * link is desired, passing in type(uint256).max is recommended.
+ * @title Warm
+ * @notice A contract that enables linking hot wallets to cold wallets for NFT ownership proxying
+ * @dev Allows cold wallets to designate a hot wallet that will be recognized as the owner of their NFTs
  */
 contract Warm is OwnableRoles {
     error CannotLinkToSelf();
     error AlreadyLinked();
-    error HotWalletLocked();
-    error TooManyLinkedWallets();
     error NoLinkExists();
-    error MismatchedOwnersAndIds();
-
-    uint256 public constant MAX_HOT_WALLET_COUNT = 128;
-    uint256 public constant NOT_FOUND = type(uint256).max;
+    error LengthMismatch();
+    error InvalidVaultLink();
+    error NotAuthorized();
 
     struct WalletLink {
         address walletAddress;
         uint96 expirationTimestamp;
     }
 
-    mapping(address => WalletLink) internal coldWalletToHotWallet;
-    mapping(address => WalletLink[]) internal hotWalletToColdWallets;
-    mapping(address => bool) internal lockedHotWallets;
+    mapping(address coldWallet => WalletLink) internal coldWalletToHotWallet;
+    mapping(address coldWallet => WalletLink) public delegationRights;
+    mapping(address coldWallet => mapping(address targetContract => WalletLink)) internal contractDelegations;
+    mapping(address coldWallet => mapping(address targetContract => mapping(uint256 tokenId => WalletLink))) internal
+        tokenDelegations;
 
-    /**
-     * expirationTimestamp is kept in seconds since the epoch.
-     * In the case where there's no expiration, the expirationTimestamp will be MAX_UINT96.
-     */
     event HotWalletChanged(address coldWallet, address from, address to, uint256 expirationTimestamp);
-
-    constructor() {}
+    event DelegationRightsChanged(
+        address indexed coldWallet,
+        address indexed previousDelegate,
+        address indexed newDelegate,
+        uint256 expirationTimestamp
+    );
+    event ContractDelegationSet(
+        address indexed coldWallet,
+        address indexed contractAddress,
+        address indexed hotWallet,
+        uint256 expirationTimestamp
+    );
+    event TokenDelegationSet(
+        address indexed coldWallet,
+        address indexed contractAddress,
+        uint256 indexed tokenId,
+        address hotWallet,
+        uint256 expirationTimestamp
+    );
 
     /**
-     * Submit a transaction from your cold wallet, thus verifying ownership of the cold wallet.
-     *
-     * If the hot wallet address is already locked, then the only address that can link to it
-     * is the cold wallet that's currently linked to it (e.g. to unlink the hot wallet).
+     * @notice Links a hot wallet to the sender's cold wallet
+     * @param hotWalletAddress The address of the hot wallet to link
+     * @param expirationTimestamp The timestamp after which this link becomes invalid
+     * @dev Must be called from the cold wallet. Cannot link to self or re-link existing relationship
      */
-    function setHotWallet(address hotWalletAddress, uint256 expirationTimestamp, bool lockHotWalletAddress) external {
+    function setHotWallet(address hotWalletAddress, uint256 expirationTimestamp) external {
         address coldWalletAddress = msg.sender;
 
         require(coldWalletAddress != hotWalletAddress, CannotLinkToSelf());
         require(coldWalletToHotWallet[coldWalletAddress].walletAddress != hotWalletAddress, AlreadyLinked());
 
-        if (lockedHotWallets[hotWalletAddress]) {
-            require(coldWalletToHotWallet[coldWalletAddress].walletAddress == hotWalletAddress, HotWalletLocked());
-        }
-
-        /**
-         * Set the hot wallet address for this cold wallet, and notify.
-         */
-        address currentHotWalletAddress = coldWalletToHotWallet[coldWalletAddress].walletAddress;
-        _setColdWalletToHotWallet(coldWalletAddress, hotWalletAddress, expirationTimestamp);
-
-        /**
-         * Update the list of cold wallets this hot wallet points to.
-         * If the new hot wallet address is address(0), remove the cold wallet
-         * from the hot wallet's list of wallets.
-         */
-        _removeColdWalletFromHotWallet(coldWalletAddress, currentHotWalletAddress);
-        if (hotWalletAddress != address(0)) {
-            require(hotWalletToColdWallets[hotWalletAddress].length < MAX_HOT_WALLET_COUNT, TooManyLinkedWallets());
-
-            _addColdWalletToHotWallet(coldWalletAddress, hotWalletAddress, expirationTimestamp);
-
-            if (lockedHotWallets[hotWalletAddress] != lockHotWalletAddress) {
-                lockedHotWallets[hotWalletAddress] = lockHotWalletAddress;
-            }
-        }
-    }
-
-    function removeColdWallet(address coldWallet) external {
-        address hotWalletAddress = msg.sender;
-        require(_findColdWalletIndex(coldWallet, hotWalletAddress) != NOT_FOUND, NoLinkExists());
-
-        _removeColdWalletFromHotWallet(coldWallet, hotWalletAddress);
-        _setColdWalletToHotWallet(coldWallet, address(0), 0);
-    }
-
-    function renounceHotWallet() external {
-        address hotWalletAddress = msg.sender;
-
-        address[] memory coldWallets = _getColdWalletAddresses(hotWalletAddress);
-
-        uint256 length = coldWallets.length;
-        for (uint256 i = 0; i < length;) {
-            address coldWallet = coldWallets[i];
-
-            _setColdWalletToHotWallet(coldWallet, address(0), 0);
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        delete hotWalletToColdWallets[hotWalletAddress];
-    }
-
-    function removeExpiredWalletLinks(address hotWalletAddress) external {
-        _removeExpiredWalletLinks(hotWalletAddress);
-    }
-
-    function getHotWallet(address coldWallet) external view returns (address) {
-        return coldWalletToHotWallet[coldWallet].walletAddress;
-    }
-
-    function getHotWalletLink(address coldWallet) external view returns (WalletLink memory) {
-        return coldWalletToHotWallet[coldWallet];
-    }
-
-    function getColdWallets(address hotWallet) external view returns (address[] memory) {
-        return _getColdWalletAddresses(hotWallet);
-    }
-
-    function getColdWalletLinks(address hotWallet) external view returns (WalletLink[] memory) {
-        return hotWalletToColdWallets[hotWallet];
-    }
-
-    function isLocked(address hotWallet) external view returns (bool) {
-        return lockedHotWallets[hotWallet];
-    }
-
-    function setLocked(bool locked) external {
-        lockedHotWallets[msg.sender] = locked;
-    }
-
-    /**
-     * This must be called from the cold wallet, so a once-granted hot wallet can't arbitrarily
-     * extend its link forever.
-     */
-    function setExpirationTimestamp(uint256 expirationTimestamp) external {
-        address coldWalletAddress = msg.sender;
-        address hotWalletAddress = coldWalletToHotWallet[coldWalletAddress].walletAddress;
-
-        if (hotWalletAddress != address(0)) {
-            coldWalletToHotWallet[coldWalletAddress].expirationTimestamp = uint96(expirationTimestamp);
-
-            WalletLink[] memory coldWalletLinks = hotWalletToColdWallets[hotWalletAddress];
-            uint256 length = coldWalletLinks.length;
-
-            for (uint256 i = 0; i < length;) {
-                if (coldWalletLinks[i].walletAddress == coldWalletAddress) {
-                    hotWalletToColdWallets[hotWalletAddress][i].expirationTimestamp = uint96(expirationTimestamp);
-                    emit HotWalletChanged(coldWalletAddress, hotWalletAddress, hotWalletAddress, uint96(expirationTimestamp));
-                }
-
-                unchecked {
-                    ++i;
-                }
-            }
-        }
-    }
-
-    /**
-     * Return the hot wallet address, if this is a cold wallet.
-     *
-     * Only returns the hot wallet address if the link hasn't expired.
-     */
-    function getProxiedAddress(address walletAddress) public view returns (address) {
-        WalletLink memory hotWalletLink = coldWalletToHotWallet[walletAddress];
-
-        if (hotWalletLink.walletAddress != address(0) && hotWalletLink.expirationTimestamp >= block.timestamp) {
-            return hotWalletLink.walletAddress;
-        }
-
-        return walletAddress;
-    }
-
-    /**
-     * ERC721 Methods
-     */
-    function balanceOf(address contractAddress, address owner) external view returns (uint256) {
-        IERC721 erc721Contract = IERC721(contractAddress);
-
-        address[] memory coldWallets = _getColdWalletAddresses(owner);
-
-        uint256 total = 0;
-        uint256 length = coldWallets.length;
-        for (uint256 i = 0; i < length;) {
-            address coldWallet = coldWallets[i];
-
-            total += erc721Contract.balanceOf(coldWallet);
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        return total + erc721Contract.balanceOf(owner);
-    }
-
-    function ownerOf(address contractAddress, uint256 tokenId) external view returns (address) {
-        IERC721 erc721Contract = IERC721(contractAddress);
-
-        address owner = erc721Contract.ownerOf(tokenId);
-
-        return getProxiedAddress(owner);
-    }
-
-    /**
-     * ERC1155 Methods
-     */
-    function balanceOfBatch(address contractAddress, address[] calldata owners, uint256[] calldata ids)
-        external
-        view
-        returns (uint256[] memory)
-    {
-        require(owners.length == ids.length, MismatchedOwnersAndIds());
-
-        IERC1155 erc1155Contract = IERC1155(contractAddress);
-
-        uint256 ownersLength = owners.length;
-
-        uint256[] memory totals = new uint256[](ownersLength);
-
-        for (uint256 i = 0; i < ownersLength;) {
-            address owner = owners[i];
-            uint256 id = ids[i];
-
-            /**
-             * Sum the balance of the owner's wallet with the balance of all of the
-             * cold wallets linking to it.
-             */
-            address[] memory coldWallets = _getColdWalletAddresses(owner);
-            uint256 coldWalletsLength = coldWallets.length;
-
-            uint256 allWalletsLength = coldWallets.length;
-
-            /**
-             * The ordering of addresses in allWallets is:
-             * [
-             *   ...coldWallets,
-             *   owner
-             * ]
-             */
-            address[] memory allWallets = new address[](allWalletsLength + 1);
-            uint256[] memory batchIds = new uint256[](allWalletsLength + 1);
-
-            allWallets[allWalletsLength] = owner;
-            batchIds[allWalletsLength] = id;
-
-            for (uint256 j = 0; j < coldWalletsLength;) {
-                address coldWallet = coldWallets[j];
-
-                allWallets[j] = coldWallet;
-                batchIds[j] = id;
-
-                unchecked {
-                    ++j;
-                }
-            }
-
-            uint256[] memory balances = erc1155Contract.balanceOfBatch(allWallets, batchIds);
-
-            uint256 total = 0;
-            uint256 balancesLength = balances.length;
-            for (uint256 j = 0; j < balancesLength;) {
-                total += balances[j];
-
-                unchecked {
-                    ++j;
-                }
-            }
-
-            totals[i] = total;
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        return totals;
-    }
-
-    function balanceOf(address contractAddress, address owner, uint256 tokenId) external view returns (uint256) {
-        IERC1155 erc1155Contract = IERC1155(contractAddress);
-
-        address[] memory coldWallets = _getColdWalletAddresses(owner);
-
-        uint256 total = 0;
-        uint256 length = coldWallets.length;
-        for (uint256 i = 0; i < length;) {
-            address coldWallet = coldWallets[i];
-
-            total += erc1155Contract.balanceOf(coldWallet, tokenId);
-
-            unchecked {
-                ++i;
-            }
-        }
-
-        return total + erc1155Contract.balanceOf(owner, tokenId);
-    }
-
-
-    /**
-     * Remove expired wallet links, which will reduce the gas cost of future lookups.
-     */
-    function _removeExpiredWalletLinks(address hotWalletAddress) internal {
-        WalletLink[] storage coldWalletLinks = hotWalletToColdWallets[hotWalletAddress];
-        uint256 length = coldWalletLinks.length;
-        uint256 timestamp = block.timestamp;
-
-        if (length > 0) {
-            for (uint256 i = length; i > 0;) {
-                uint256 index = i - 1;
-                if (coldWalletLinks[index].expirationTimestamp < timestamp) {
-                    _setColdWalletToHotWallet(coldWalletLinks[index].walletAddress, address(0), 0);
-                    /**
-                     * Swap with the last element in the array so we can pop the expired item off.
-                     * Index (length - 1) is already the last item, and doesn't need to swap.
-                     */
-                    if (index < length - 1) {
-                        coldWalletLinks[index] = coldWalletLinks[length - 1];
-                    }
-                    coldWalletLinks.pop();
-                    unchecked {
-                        --length;
-                    }
-                }
-
-                unchecked {
-                    --i;
-                }
-            }
-        }
-    }
-
-    function _removeColdWalletFromHotWallet(address coldWalletAddress, address hotWalletAddress) internal {
-        uint256 coldWalletIndex = _findColdWalletIndex(coldWalletAddress, hotWalletAddress);
-
-        if (coldWalletIndex != NOT_FOUND) {
-            delete hotWalletToColdWallets[hotWalletAddress][coldWalletIndex];
-        }
-
-        _removeExpiredWalletLinks(hotWalletAddress);
-    }
-
-    function _addColdWalletToHotWallet(address coldWalletAddress, address hotWalletAddress, uint256 expirationTimestamp)
-        internal
-    {
-        uint256 coldWalletIndex = _findColdWalletIndex(coldWalletAddress, hotWalletAddress);
-
-        if (coldWalletIndex == NOT_FOUND) {
-            hotWalletToColdWallets[hotWalletAddress].push(WalletLink(coldWalletAddress, uint96(expirationTimestamp)));
-        }
-    }
-
-    function _setColdWalletToHotWallet(address coldWalletAddress, address hotWalletAddress, uint256 expirationTimestamp)
-        internal
-    {
         address currentHotWalletAddress = coldWalletToHotWallet[coldWalletAddress].walletAddress;
         coldWalletToHotWallet[coldWalletAddress] = WalletLink(hotWalletAddress, uint96(expirationTimestamp));
 
@@ -403,81 +85,197 @@ contract Warm is OwnableRoles {
     }
 
     /**
-     * Returns the index of the cold wallet in the list of cold wallets that
-     * point to this hot wallet.
-     *
-     * Returns NOT_FOUND if not found (we don't support storing this many wallet
-     * connections, so this should never be an actual cold wallet's index).
+     * @notice Removes the link between a cold wallet and its hot wallet
+     * @param coldWallet The cold wallet address to unlink
+     * @dev Must be called by the currently linked hot wallet
      */
+    function removeColdWallet(address coldWallet) external {
+        require(coldWalletToHotWallet[coldWallet].walletAddress == msg.sender, NoLinkExists());
 
-    function _findColdWalletIndex(address coldWalletAddress, address hotWalletAddress)
-        internal
+        coldWalletToHotWallet[coldWallet] = WalletLink(address(0), 0);
+        emit HotWalletChanged(coldWallet, msg.sender, address(0), 0);
+    }
+
+    /**
+     * @notice Updates the expiration timestamp for an existing wallet link
+     * @param expirationTimestamp The new expiration timestamp
+     * @dev Must be called from the cold wallet
+     */
+    function setExpirationTimestamp(uint256 expirationTimestamp) external {
+        address coldWalletAddress = msg.sender;
+        address hotWalletAddress = coldWalletToHotWallet[coldWalletAddress].walletAddress;
+
+        if (hotWalletAddress != address(0)) {
+            coldWalletToHotWallet[coldWalletAddress].expirationTimestamp = uint96(expirationTimestamp);
+            emit HotWalletChanged(coldWalletAddress, hotWalletAddress, hotWalletAddress, expirationTimestamp);
+        }
+    }
+
+    /**
+     * @notice Gets the current active hot wallet for a given address, if any
+     * @param walletAddress The address to check
+     * @return The hot wallet address if there's an active link, otherwise returns the input address
+     */
+    function getProxiedAddress(address walletAddress) public view returns (address) {
+        return getProxiedAddress(walletAddress, address(0), 0);
+    }
+
+    /**
+     * @notice Gets the currently linked hot wallet for a cold wallet
+     * @param coldWallet The cold wallet address to check
+     * @return The linked hot wallet address, or address(0) if none
+     */
+    function getHotWallet(address coldWallet) external view returns (address) {
+        return coldWalletToHotWallet[coldWallet].walletAddress;
+    }
+
+    /**
+     * @notice Gets the full wallet link details for a cold wallet
+     * @param coldWallet The cold wallet address to check
+     * @return The WalletLink struct containing the hot wallet address and expiration
+     */
+    function getHotWalletLink(address coldWallet) external view returns (WalletLink memory) {
+        return coldWalletToHotWallet[coldWallet];
+    }
+
+    /**
+     * @notice Gets the owner of an ERC721 token, resolving any hot wallet links
+     * @param contractAddress The ERC721 contract address
+     * @param tokenId The token ID to check
+     * @return The owner address, resolved through any active wallet links
+     */
+    function ownerOf(address contractAddress, uint256 tokenId) external view returns (address) {
+        IERC721 erc721Contract = IERC721(contractAddress);
+        address owner = erc721Contract.ownerOf(tokenId);
+        return getProxiedAddress(owner, contractAddress, tokenId);
+    }
+
+    /**
+     * @notice Gets the combined ERC721 balance of an address and optionally its linked vault
+     * @param contractAddress The ERC721 contract address
+     * @param owner The address to check the balance of
+     * @param vaultWallet The cold wallet address to include in balance, or address(0) to skip
+     * @return The combined balance
+     * @dev Reverts if vaultWallet is specified but not linked to owner
+     */
+    function balanceOf(address contractAddress, address owner, address vaultWallet) external view returns (uint256) {
+        IERC721 erc721Contract = IERC721(contractAddress);
+        if (vaultWallet == address(0)) return erc721Contract.balanceOf(owner);
+
+        require(coldWalletToHotWallet[vaultWallet].walletAddress == owner, InvalidVaultLink());
+
+        return erc721Contract.balanceOf(owner) + erc721Contract.balanceOf(vaultWallet);
+    }
+
+    function balanceOf(address contractAddress, address owner, uint256 id, address vaultWallet)
+        external
         view
         returns (uint256)
     {
-        WalletLink[] memory coldWalletLinks = hotWalletToColdWallets[hotWalletAddress];
-        uint256 length = coldWalletLinks.length;
-        for (uint256 i = 0; i < length;) {
-            if (coldWalletLinks[i].walletAddress == coldWalletAddress) {
-                return i;
-            }
+        IERC1155 erc1155Contract = IERC1155(contractAddress);
+        if (vaultWallet == address(0)) return erc1155Contract.balanceOf(owner, id);
 
-            unchecked {
-                ++i;
-            }
-        }
+        require(coldWalletToHotWallet[vaultWallet].walletAddress == owner, InvalidVaultLink());
 
-        return NOT_FOUND;
+        return erc1155Contract.balanceOf(owner, id) + erc1155Contract.balanceOf(vaultWallet, id);
     }
 
-    function _getColdWalletAddresses(address hotWalletAddress)
-        internal
-        view
-        returns (address[] memory coldWalletAddresses)
-    {
-        WalletLink[] memory walletLinks = hotWalletToColdWallets[hotWalletAddress];
+    function balanceOfBatch(
+        address contractAddress,
+        address[] calldata owners,
+        uint256[] calldata ids,
+        address[] calldata vaultWallets
+    ) external view returns (uint256[] memory) {
+        require(owners.length == ids.length && owners.length == vaultWallets.length, LengthMismatch());
 
-        uint256 length = walletLinks.length;
-        uint96 timestamp = uint96(block.timestamp);
+        IERC1155 erc1155Contract = IERC1155(contractAddress);
+        uint256[] memory balances = new uint256[](owners.length);
 
-        address[] memory addresses = new address[](length);
+        for (uint256 i = 0; i < owners.length; i++) {
+            address vaultWallet = vaultWallets[i];
+            address owner = owners[i];
+            uint256 id = ids[i];
 
-        bool needsResize = false;
-        uint256 index = 0;
-        for (uint256 i = 0; i < length;) {
-            WalletLink memory walletLink = walletLinks[i];
-            if (walletLink.expirationTimestamp >= timestamp) {
-                addresses[index] = walletLink.walletAddress;
-
-                unchecked {
-                    ++index;
-                }
+            if (vaultWallet == address(0)) {
+                balances[i] = erc1155Contract.balanceOf(owner, id);
             } else {
-                needsResize = true;
-            }
+                require(coldWalletToHotWallet[vaultWallet].walletAddress == owner, InvalidVaultLink());
 
-            unchecked {
-                ++i;
+                balances[i] = erc1155Contract.balanceOf(owner, id) + erc1155Contract.balanceOf(vaultWallet, id);
             }
         }
 
-        /**
-         * Resize array down to the correct size, if needed
-         */
-        if (needsResize) {
-            address[] memory resizedAddresses = new address[](index);
+        return balances;
+    }
 
-            for (uint256 i = 0; i < index;) {
-                resizedAddresses[i] = addresses[i];
+    function setDelegationRights(address delegate, uint256 expirationTimestamp) external {
+        require(msg.sender != delegate, CannotLinkToSelf());
 
-                unchecked {
-                    ++i;
-                }
-            }
+        address previousDelegate = delegationRights[msg.sender].walletAddress;
+        delegationRights[msg.sender] = WalletLink(delegate, uint96(expirationTimestamp));
 
-            return resizedAddresses;
+        emit DelegationRightsChanged(msg.sender, previousDelegate, delegate, expirationTimestamp);
+    }
+
+    function _isAuthorizedToDelegate(address coldWallet) internal view returns (bool) {
+        if (msg.sender == coldWallet) return true;
+
+        WalletLink memory rights = delegationRights[coldWallet];
+        return rights.walletAddress == msg.sender && rights.expirationTimestamp >= block.timestamp;
+    }
+
+    function setContractDelegation(
+        address coldWallet,
+        address contractAddress,
+        address hotWallet,
+        uint256 expirationTimestamp
+    ) external {
+        require(_isAuthorizedToDelegate(coldWallet), NotAuthorized());
+        require(coldWallet != hotWallet, CannotLinkToSelf());
+
+        contractDelegations[coldWallet][contractAddress] = WalletLink(hotWallet, uint96(expirationTimestamp));
+
+        emit ContractDelegationSet(coldWallet, contractAddress, hotWallet, expirationTimestamp);
+    }
+
+    function setTokenDelegation(
+        address coldWallet,
+        address contractAddress,
+        uint256 tokenId,
+        address hotWallet,
+        uint256 expirationTimestamp
+    ) external {
+        require(_isAuthorizedToDelegate(coldWallet), NotAuthorized());
+        require(coldWallet != hotWallet, CannotLinkToSelf());
+
+        tokenDelegations[coldWallet][contractAddress][tokenId] = WalletLink(hotWallet, uint96(expirationTimestamp));
+
+        emit TokenDelegationSet(coldWallet, contractAddress, tokenId, hotWallet, expirationTimestamp);
+    }
+
+    function getProxiedAddress(address walletAddress, address contractAddress, uint256 tokenId)
+        public
+        view
+        returns (address)
+    {
+        // Check token-specific delegation
+        WalletLink memory tokenLink = tokenDelegations[walletAddress][contractAddress][tokenId];
+        if (tokenLink.walletAddress != address(0) && tokenLink.expirationTimestamp >= block.timestamp) {
+            return tokenLink.walletAddress;
         }
 
-        return addresses;
+        // Check contract-specific delegation
+        WalletLink memory contractLink = contractDelegations[walletAddress][contractAddress];
+        if (contractLink.walletAddress != address(0) && contractLink.expirationTimestamp >= block.timestamp) {
+            return contractLink.walletAddress;
+        }
+
+        // Check wallet-wide delegation
+        WalletLink memory walletLink = coldWalletToHotWallet[walletAddress];
+        if (walletLink.walletAddress != address(0) && walletLink.expirationTimestamp >= block.timestamp) {
+            return walletLink.walletAddress;
+        }
+
+        return walletAddress;
     }
 }
