@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import "solady/auth/OwnableRoles.sol";
-
 interface IERC721 {
     function ownerOf(uint256 _tokenId) external view returns (address);
     function balanceOf(address owner) external view returns (uint256);
@@ -21,13 +19,22 @@ interface IERC1155 {
         returns (uint256[] memory);
 }
 
+interface IWarmV1 {
+    function ownerOf(address contractAddress, uint256 tokenId) external view returns (address);
+    function balanceOf(address contractAddress, address owner) external view returns (uint256);
+    function balanceOf(address contractAddress, address owner, uint256 id) external view returns (uint256);
+    function balanceOfBatch(address contractAddress, address[] calldata owners, uint256[] calldata ids)
+        external
+        view
+        returns (uint256[] memory);
+}
+
 /**
  * @title Warm
  * @notice A contract that enables linking hot wallets to cold wallets for NFT ownership proxying
  * @dev Allows cold wallets to designate a hot wallet that will be recognized as the owner of their NFTs
  */
-contract Warm is OwnableRoles {
-    error CannotLinkToSelf();
+contract Warm {
     error AlreadyLinked();
     error NoLinkExists();
     error LengthMismatch();
@@ -39,19 +46,16 @@ contract Warm is OwnableRoles {
         uint96 expirationTimestamp;
     }
 
-    mapping(address coldWallet => WalletLink) internal coldWalletToHotWallet;
+    IWarmV1 public constant _WARM_V1 = IWarmV1(0xC3AA9bc72Bd623168860a1e5c6a4530d3D80456c);
+
     mapping(address coldWallet => WalletLink) public delegationRights;
-    mapping(address coldWallet => mapping(address targetContract => WalletLink)) internal contractDelegations;
-    mapping(address coldWallet => mapping(address targetContract => mapping(uint256 tokenId => WalletLink))) internal
+    mapping(address coldWallet => WalletLink) public walletDelegations;
+    mapping(address coldWallet => mapping(address targetContract => WalletLink)) public contractDelegations;
+    mapping(address coldWallet => mapping(address targetContract => mapping(uint256 tokenId => WalletLink))) public
         tokenDelegations;
 
-    event HotWalletChanged(address coldWallet, address from, address to, uint256 expirationTimestamp);
-    event DelegationRightsChanged(
-        address indexed coldWallet,
-        address indexed previousDelegate,
-        address indexed newDelegate,
-        uint256 expirationTimestamp
-    );
+    event HotWalletSet(address coldWallet, address hotWallet, uint256 expirationTimestamp);
+    event DelegationRightsSet(address indexed coldWallet, address indexed newDelegate, uint256 expirationTimestamp);
     event ContractDelegationSet(
         address indexed coldWallet,
         address indexed contractAddress,
@@ -66,76 +70,99 @@ contract Warm is OwnableRoles {
         uint256 expirationTimestamp
     );
 
+    modifier onlyAuthorizedToDelegate(address coldWallet) {
+        if (msg.sender != coldWallet) {
+            WalletLink memory rights = delegationRights[coldWallet];
+            require(
+                rights.walletAddress == msg.sender && rights.expirationTimestamp >= block.timestamp, NotAuthorized()
+            );
+        }
+        _;
+    }
+
     /**
      * @notice Links a hot wallet to the sender's cold wallet
-     * @param hotWalletAddress The address of the hot wallet to link
+     * @param hotWalletAddress The address of the hot wallet to link. Address(0) to remove the link.
      * @param expirationTimestamp The timestamp after which this link becomes invalid
-     * @dev Must be called from the cold wallet. Cannot link to self or re-link existing relationship
+     * @dev Must be called from the cold wallet or delegated manager
      */
-    function setHotWallet(address hotWalletAddress, uint256 expirationTimestamp) external {
-        address coldWalletAddress = msg.sender;
+    function setHotWallet(address coldWalletAddress, address hotWalletAddress, uint256 expirationTimestamp)
+        external
+        onlyAuthorizedToDelegate(coldWalletAddress)
+    {
+        if (hotWalletAddress == address(0)) {
+            delete walletDelegations[coldWalletAddress];
+        } else {
+            walletDelegations[coldWalletAddress] = WalletLink(hotWalletAddress, uint96(expirationTimestamp));
+        }
 
-        require(coldWalletAddress != hotWalletAddress, CannotLinkToSelf());
-        require(coldWalletToHotWallet[coldWalletAddress].walletAddress != hotWalletAddress, AlreadyLinked());
-
-        address currentHotWalletAddress = coldWalletToHotWallet[coldWalletAddress].walletAddress;
-        coldWalletToHotWallet[coldWalletAddress] = WalletLink(hotWalletAddress, uint96(expirationTimestamp));
-
-        emit HotWalletChanged(coldWalletAddress, currentHotWalletAddress, hotWalletAddress, expirationTimestamp);
+        emit HotWalletSet(coldWalletAddress, hotWalletAddress, expirationTimestamp);
     }
 
     /**
-     * @notice Removes the link between a cold wallet and its hot wallet
-     * @param coldWallet The cold wallet address to unlink
-     * @dev Must be called by the currently linked hot wallet
-     */
-    function removeColdWallet(address coldWallet) external {
-        require(coldWalletToHotWallet[coldWallet].walletAddress == msg.sender, NoLinkExists());
-
-        coldWalletToHotWallet[coldWallet] = WalletLink(address(0), 0);
-        emit HotWalletChanged(coldWallet, msg.sender, address(0), 0);
-    }
-
-    /**
-     * @notice Updates the expiration timestamp for an existing wallet link
-     * @param expirationTimestamp The new expiration timestamp
+     * @notice Sets delegation rights for another wallet to manage the sender's delegations
+     * @param delegate The address to grant delegation rights to. Address(0) to remove delegation.
+     * @param expirationTimestamp The timestamp after which these delegation rights become invalid
      * @dev Must be called from the cold wallet
      */
-    function setExpirationTimestamp(uint256 expirationTimestamp) external {
-        address coldWalletAddress = msg.sender;
-        address hotWalletAddress = coldWalletToHotWallet[coldWalletAddress].walletAddress;
-
-        if (hotWalletAddress != address(0)) {
-            coldWalletToHotWallet[coldWalletAddress].expirationTimestamp = uint96(expirationTimestamp);
-            emit HotWalletChanged(coldWalletAddress, hotWalletAddress, hotWalletAddress, expirationTimestamp);
+    function setDelegationRights(address delegate, uint256 expirationTimestamp)
+        external
+        onlyAuthorizedToDelegate(msg.sender)
+    {
+        if (delegate == address(0)) {
+            delete delegationRights[msg.sender];
+        } else {
+            delegationRights[msg.sender] = WalletLink(delegate, uint96(expirationTimestamp));
         }
+
+        emit DelegationRightsSet(msg.sender, delegate, expirationTimestamp);
     }
 
     /**
-     * @notice Gets the current active hot wallet for a given address, if any
-     * @param walletAddress The address to check
-     * @return The hot wallet address if there's an active link, otherwise returns the input address
+     * @notice Sets a hot wallet for a given contract address
+     * @param contractAddress The contract address to set the hot wallet for
+     * @param hotWallet The hot wallet address. Address(0) to remove the delegation.
+     * @param expirationTimestamp The timestamp after which this delegation becomes invalid
+     * @dev Must be called from the cold wallet or delegated manager
      */
-    function getProxiedAddress(address walletAddress) public view returns (address) {
-        return getProxiedAddress(walletAddress, address(0), 0);
+    function setContractDelegation(
+        address coldWallet,
+        address contractAddress,
+        address hotWallet,
+        uint256 expirationTimestamp
+    ) external onlyAuthorizedToDelegate(coldWallet) {
+        if (hotWallet == address(0)) {
+            delete contractDelegations[coldWallet][contractAddress];
+        } else {
+            contractDelegations[coldWallet][contractAddress] = WalletLink(hotWallet, uint96(expirationTimestamp));
+        }
+
+        emit ContractDelegationSet(coldWallet, contractAddress, hotWallet, expirationTimestamp);
     }
 
     /**
-     * @notice Gets the currently linked hot wallet for a cold wallet
-     * @param coldWallet The cold wallet address to check
-     * @return The linked hot wallet address, or address(0) if none
+     * @notice Sets a hot wallet for a given token
+     * @param coldWallet The cold wallet address to set the hot wallet for
+     * @param contractAddress The contract address to set the hot wallet for
+     * @param tokenId The token ID to set the hot wallet for
+     * @param hotWallet The hot wallet address. Address(0) to remove the delegation.
+     * @param expirationTimestamp The timestamp after which this delegation becomes invalid
+     * @dev Must be called from the cold wallet or delegated manager
      */
-    function getHotWallet(address coldWallet) external view returns (address) {
-        return coldWalletToHotWallet[coldWallet].walletAddress;
-    }
+    function setTokenDelegation(
+        address coldWallet,
+        address contractAddress,
+        uint256 tokenId,
+        address hotWallet,
+        uint256 expirationTimestamp
+    ) external onlyAuthorizedToDelegate(coldWallet) {
+        if (hotWallet == address(0)) {
+            delete tokenDelegations[coldWallet][contractAddress][tokenId];
+        } else {
+            tokenDelegations[coldWallet][contractAddress][tokenId] = WalletLink(hotWallet, uint96(expirationTimestamp));
+        }
 
-    /**
-     * @notice Gets the full wallet link details for a cold wallet
-     * @param coldWallet The cold wallet address to check
-     * @return The WalletLink struct containing the hot wallet address and expiration
-     */
-    function getHotWalletLink(address coldWallet) external view returns (WalletLink memory) {
-        return coldWalletToHotWallet[coldWallet];
+        emit TokenDelegationSet(coldWallet, contractAddress, tokenId, hotWallet, expirationTimestamp);
     }
 
     /**
@@ -147,7 +174,25 @@ contract Warm is OwnableRoles {
     function ownerOf(address contractAddress, uint256 tokenId) external view returns (address) {
         IERC721 erc721Contract = IERC721(contractAddress);
         address owner = erc721Contract.ownerOf(tokenId);
-        return getProxiedAddress(owner, contractAddress, tokenId);
+
+        WalletLink memory tokenLink = tokenDelegations[owner][contractAddress][tokenId];
+        if (tokenLink.walletAddress != address(0) && tokenLink.expirationTimestamp >= block.timestamp) {
+            return tokenLink.walletAddress;
+        }
+
+        // Check contract-specific delegation
+        WalletLink memory contractLink = contractDelegations[owner][contractAddress];
+        if (contractLink.walletAddress != address(0) && contractLink.expirationTimestamp >= block.timestamp) {
+            return contractLink.walletAddress;
+        }
+
+        // Check wallet-wide delegation
+        WalletLink memory walletLink = walletDelegations[owner];
+        if (walletLink.walletAddress != address(0) && walletLink.expirationTimestamp >= block.timestamp) {
+            return walletLink.walletAddress;
+        }
+
+        return _WARM_V1.ownerOf(contractAddress, tokenId);
     }
 
     /**
@@ -159,12 +204,14 @@ contract Warm is OwnableRoles {
      * @dev Reverts if vaultWallet is specified but not linked to owner
      */
     function balanceOf(address contractAddress, address owner, address vaultWallet) external view returns (uint256) {
-        IERC721 erc721Contract = IERC721(contractAddress);
-        if (vaultWallet == address(0)) return erc721Contract.balanceOf(owner);
+        if (vaultWallet == address(0)) {
+            return _WARM_V1.balanceOf(contractAddress, owner);
+        } else {
+            IERC721 erc721Contract = IERC721(contractAddress);
+            require(walletDelegations[vaultWallet].walletAddress == owner, InvalidVaultLink());
 
-        require(coldWalletToHotWallet[vaultWallet].walletAddress == owner, InvalidVaultLink());
-
-        return erc721Contract.balanceOf(owner) + erc721Contract.balanceOf(vaultWallet);
+            return erc721Contract.balanceOf(owner) + erc721Contract.balanceOf(vaultWallet);
+        }
     }
 
     function balanceOf(address contractAddress, address owner, uint256 id, address vaultWallet)
@@ -172,12 +219,14 @@ contract Warm is OwnableRoles {
         view
         returns (uint256)
     {
-        IERC1155 erc1155Contract = IERC1155(contractAddress);
-        if (vaultWallet == address(0)) return erc1155Contract.balanceOf(owner, id);
+        if (vaultWallet == address(0)) {
+            return _WARM_V1.balanceOf(contractAddress, owner, id);
+        } else {
+            IERC1155 erc1155Contract = IERC1155(contractAddress);
+            require(walletDelegations[vaultWallet].walletAddress == owner, InvalidVaultLink());
 
-        require(coldWalletToHotWallet[vaultWallet].walletAddress == owner, InvalidVaultLink());
-
-        return erc1155Contract.balanceOf(owner, id) + erc1155Contract.balanceOf(vaultWallet, id);
+            return erc1155Contract.balanceOf(owner, id) + erc1155Contract.balanceOf(vaultWallet, id);
+        }
     }
 
     function balanceOfBatch(
@@ -197,85 +246,14 @@ contract Warm is OwnableRoles {
             uint256 id = ids[i];
 
             if (vaultWallet == address(0)) {
-                balances[i] = erc1155Contract.balanceOf(owner, id);
+                balances[i] = _WARM_V1.balanceOf(contractAddress, owner, id);
             } else {
-                require(coldWalletToHotWallet[vaultWallet].walletAddress == owner, InvalidVaultLink());
+                require(walletDelegations[vaultWallet].walletAddress == owner, InvalidVaultLink());
 
                 balances[i] = erc1155Contract.balanceOf(owner, id) + erc1155Contract.balanceOf(vaultWallet, id);
             }
         }
 
         return balances;
-    }
-
-    function setDelegationRights(address delegate, uint256 expirationTimestamp) external {
-        require(msg.sender != delegate, CannotLinkToSelf());
-
-        address previousDelegate = delegationRights[msg.sender].walletAddress;
-        delegationRights[msg.sender] = WalletLink(delegate, uint96(expirationTimestamp));
-
-        emit DelegationRightsChanged(msg.sender, previousDelegate, delegate, expirationTimestamp);
-    }
-
-    function _isAuthorizedToDelegate(address coldWallet) internal view returns (bool) {
-        if (msg.sender == coldWallet) return true;
-
-        WalletLink memory rights = delegationRights[coldWallet];
-        return rights.walletAddress == msg.sender && rights.expirationTimestamp >= block.timestamp;
-    }
-
-    function setContractDelegation(
-        address coldWallet,
-        address contractAddress,
-        address hotWallet,
-        uint256 expirationTimestamp
-    ) external {
-        require(_isAuthorizedToDelegate(coldWallet), NotAuthorized());
-        require(coldWallet != hotWallet, CannotLinkToSelf());
-
-        contractDelegations[coldWallet][contractAddress] = WalletLink(hotWallet, uint96(expirationTimestamp));
-
-        emit ContractDelegationSet(coldWallet, contractAddress, hotWallet, expirationTimestamp);
-    }
-
-    function setTokenDelegation(
-        address coldWallet,
-        address contractAddress,
-        uint256 tokenId,
-        address hotWallet,
-        uint256 expirationTimestamp
-    ) external {
-        require(_isAuthorizedToDelegate(coldWallet), NotAuthorized());
-        require(coldWallet != hotWallet, CannotLinkToSelf());
-
-        tokenDelegations[coldWallet][contractAddress][tokenId] = WalletLink(hotWallet, uint96(expirationTimestamp));
-
-        emit TokenDelegationSet(coldWallet, contractAddress, tokenId, hotWallet, expirationTimestamp);
-    }
-
-    function getProxiedAddress(address walletAddress, address contractAddress, uint256 tokenId)
-        public
-        view
-        returns (address)
-    {
-        // Check token-specific delegation
-        WalletLink memory tokenLink = tokenDelegations[walletAddress][contractAddress][tokenId];
-        if (tokenLink.walletAddress != address(0) && tokenLink.expirationTimestamp >= block.timestamp) {
-            return tokenLink.walletAddress;
-        }
-
-        // Check contract-specific delegation
-        WalletLink memory contractLink = contractDelegations[walletAddress][contractAddress];
-        if (contractLink.walletAddress != address(0) && contractLink.expirationTimestamp >= block.timestamp) {
-            return contractLink.walletAddress;
-        }
-
-        // Check wallet-wide delegation
-        WalletLink memory walletLink = coldWalletToHotWallet[walletAddress];
-        if (walletLink.walletAddress != address(0) && walletLink.expirationTimestamp >= block.timestamp) {
-            return walletLink.walletAddress;
-        }
-
-        return walletAddress;
     }
 }

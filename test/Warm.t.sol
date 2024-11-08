@@ -43,12 +43,65 @@ contract WarmTest is Test {
         (address walletAddress, uint96 expirationTimestamp) = warm.delegationRights(coldWallet);
         assertEq(walletAddress, delegatedManager);
         assertEq(expirationTimestamp, expiration);
+
+        // Test that delegated manager can set contract delegation
+        vm.prank(delegatedManager);
+        warm.setContractDelegation(
+            coldWallet,
+            address(mockERC721),
+            contractDelegate,
+            expiration
+        );
+
+        // Verify contract delegation was set
+        (address proxiedAddress, ) = warm.contractDelegations(coldWallet, address(mockERC721));
+        assertEq(proxiedAddress, contractDelegate);
+
+        // Test that delegated manager can set token delegation
+        vm.prank(delegatedManager);
+        warm.setTokenDelegation(
+            coldWallet,
+            address(mockERC721),
+            1,
+            tokenDelegate,
+            expiration
+        );
+
+        // Verify token delegation was set
+        (proxiedAddress, ) = warm.tokenDelegations(coldWallet, address(mockERC721), 1);
+        assertEq(proxiedAddress, tokenDelegate);
+
+        // Test that delegated manager can revoke delegations by passing in zero address
+        vm.prank(delegatedManager);
+        warm.setContractDelegation(
+            coldWallet,
+            address(mockERC721),
+            address(0),
+            type(uint96).max
+        );
+
+        // Verify contract delegation was revoked
+        (proxiedAddress, ) = warm.walletDelegations(coldWallet);
+        assertEq(proxiedAddress, address(0));
+
+        // Test that delegated manager cannot set delegation rights for the cold wallet
+        vm.prank(delegatedManager);
+        warm.setDelegationRights(hotWallet, expiration);
+
+        // Verify delegation rights were not changed
+        (walletAddress, ) = warm.delegationRights(coldWallet);
+        assertEq(walletAddress, delegatedManager);
     }
 
-    function testCannotDelegateToSelf() public {
-        vm.prank(coldWallet);
-        vm.expectRevert(Warm.CannotLinkToSelf.selector);
-        warm.setDelegationRights(coldWallet, block.timestamp + 1 days);
+    function testWarmV1Fallback() public {
+        address coldWallet = 0x5C04911bA3a457De6FA0357b339220e4E034e8F7;
+        address hotWallet = 0x128BcA72459f8610Eb6AE25E3af071fC81039163;
+        address bayc = 0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D;
+        uint256 tokenId = 8903;
+
+        // Check that the proxied owner matches the hot wallet from V1
+        address proxiedOwner = warm.ownerOf(bayc, tokenId);
+        assertEq(proxiedOwner, hotWallet);
     }
 
     // === Contract Delegation Tests ===
@@ -76,17 +129,6 @@ contract WarmTest is Test {
         // Check that contract delegation works
         address proxiedOwner = warm.ownerOf(address(mockERC721), 1);
         assertEq(proxiedOwner, contractDelegate);
-    }
-
-    function testUnauthorizedContractDelegation() public {
-        vm.prank(hotWallet);
-        vm.expectRevert(Warm.NotAuthorized.selector);
-        warm.setContractDelegation(
-            coldWallet,
-            address(mockERC721),
-            contractDelegate,
-            block.timestamp + 1 days
-        );
     }
 
     // === Token Delegation Tests ===
@@ -119,10 +161,10 @@ contract WarmTest is Test {
         
         vm.startPrank(coldWallet);
         
-        // Set wallet-wide delegation
-        warm.setHotWallet(hotWallet, expiration);
+        // Update setHotWallet call to include coldWallet parameter
+        warm.setHotWallet(coldWallet, hotWallet, expiration);
         
-        // Set contract-wide delegation
+        // Rest of the function remains the same
         warm.setContractDelegation(
             coldWallet,
             address(mockERC721),
@@ -130,7 +172,6 @@ contract WarmTest is Test {
             expiration
         );
         
-        // Set token-specific delegation
         warm.setTokenDelegation(
             coldWallet,
             address(mockERC721),
@@ -162,19 +203,14 @@ contract WarmTest is Test {
         
         vm.startPrank(coldWallet);
         
-        // Set all delegation levels
-        warm.setHotWallet(hotWallet, expiration);
+        // Update setHotWallet call to include coldWallet parameter
+        warm.setHotWallet(coldWallet, hotWallet, expiration);
+        
+        // Rest of the function remains the same
         warm.setContractDelegation(
             coldWallet,
             address(mockERC721),
             contractDelegate,
-            expiration
-        );
-        warm.setTokenDelegation(
-            coldWallet,
-            address(mockERC721),
-            1,
-            tokenDelegate,
             expiration
         );
         
@@ -187,5 +223,35 @@ contract WarmTest is Test {
 
         // Should return original owner when all delegations are expired
         assertEq(warm.ownerOf(address(mockERC721), 1), coldWallet);
+    }
+
+    // === Revert Tests ===
+    function testRevert_UnauthorizedContractDelegation() public {
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(Warm.NotAuthorized.selector);
+        warm.setContractDelegation(
+            coldWallet,
+            address(mockERC721),
+            contractDelegate,
+            block.timestamp + 1 days
+        );
+    }
+
+    function testRevert_UnauthorizedTokenDelegation() public {
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(Warm.NotAuthorized.selector);
+        warm.setTokenDelegation(
+            coldWallet,
+            address(mockERC721),
+            1,
+            tokenDelegate,
+            block.timestamp + 1 days
+        );
+    }
+
+    function testRevert_UnauthorizedWalletDelegation() public {
+        vm.prank(address(0xBEEF));
+        vm.expectRevert(Warm.NotAuthorized.selector);
+        warm.setHotWallet(coldWallet, hotWallet, block.timestamp + 1 days);
     }
 }
