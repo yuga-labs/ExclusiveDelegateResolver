@@ -1,33 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-interface IERC721 {
-    function ownerOf(uint256 _tokenId) external view returns (address);
-    function balanceOf(address owner) external view returns (uint256);
-    function balanceOf(address owner, uint256 id) external view returns (uint256);
-    function balanceOfBatch(address[] calldata owners, uint256[] calldata ids)
-        external
-        view
-        returns (uint256[] memory);
-}
-
-interface IERC1155 {
-    function balanceOf(address owner, uint256 id) external view returns (uint256);
-    function balanceOfBatch(address[] calldata owners, uint256[] calldata ids)
-        external
-        view
-        returns (uint256[] memory);
-}
-
-interface IWarmV1 {
-    function ownerOf(address contractAddress, uint256 tokenId) external view returns (address);
-    function balanceOf(address contractAddress, address owner) external view returns (uint256);
-    function balanceOf(address contractAddress, address owner, uint256 id) external view returns (uint256);
-    function balanceOfBatch(address contractAddress, address[] calldata owners, uint256[] calldata ids)
-        external
-        view
-        returns (uint256[] memory);
-}
+import {IERC721} from "forge/interfaces/IERC721.sol";
+import {IWarmV1} from "./interfaces/IWarmV1.sol";
 
 /**
  * @title Warm
@@ -40,6 +15,7 @@ contract Warm {
     error LengthMismatch();
     error InvalidVaultLink();
     error NotAuthorized();
+    error FallbackNotAllowed();
 
     struct WalletLink {
         address walletAddress;
@@ -70,12 +46,25 @@ contract Warm {
         uint256 expirationTimestamp
     );
 
+    /**
+     * @notice Only allows the cold wallet or a delegate with delegation rights to call the function
+     */
     modifier onlyAuthorizedToDelegate(address coldWallet) {
         if (msg.sender != coldWallet) {
             WalletLink memory rights = delegationRights[coldWallet];
             require(
                 rights.walletAddress == msg.sender && rights.expirationTimestamp >= block.timestamp, NotAuthorized()
             );
+        }
+        _;
+    }
+
+    /**
+     * @dev withV1Fallback can only be true where Warm V1 exists, on Ethereum Mainnet (chainId 1)
+     */
+    modifier validateV1Fallback(bool withV1Fallback) {
+        if (withV1Fallback) {
+            require(block.chainid == 1, FallbackNotAllowed());
         }
         _;
     }
@@ -169,9 +158,17 @@ contract Warm {
      * @notice Gets the owner of an ERC721 token, resolving any hot wallet links
      * @param contractAddress The ERC721 contract address
      * @param tokenId The token ID to check
+     * @param withV1Fallback Whether to fallback to the warm v1 owner if no delegation is found
+     * @dev withV1Fallback is for convenience, be conscious of the gas cost implications
+     * @dev withV1Fallback can only be true on Ethereum Mainnet (chainId 1)
      * @return The owner address, resolved through any active wallet links
      */
-    function ownerOf(address contractAddress, uint256 tokenId) external view returns (address) {
+    function ownerOf(address contractAddress, uint256 tokenId, bool withV1Fallback)
+        external
+        view
+        validateV1Fallback(withV1Fallback)
+        returns (address)
+    {
         IERC721 erc721Contract = IERC721(contractAddress);
         address owner = erc721Contract.ownerOf(tokenId);
 
@@ -192,68 +189,6 @@ contract Warm {
             return walletLink.walletAddress;
         }
 
-        return _WARM_V1.ownerOf(contractAddress, tokenId);
-    }
-
-    /**
-     * @notice Gets the combined ERC721 balance of an address and optionally its linked vault
-     * @param contractAddress The ERC721 contract address
-     * @param owner The address to check the balance of
-     * @param vaultWallet The cold wallet address to include in balance, or address(0) to skip
-     * @return The combined balance
-     * @dev Reverts if vaultWallet is specified but not linked to owner
-     */
-    function balanceOf(address contractAddress, address owner, address vaultWallet) external view returns (uint256) {
-        if (vaultWallet == address(0)) {
-            return _WARM_V1.balanceOf(contractAddress, owner);
-        } else {
-            IERC721 erc721Contract = IERC721(contractAddress);
-            require(walletDelegations[vaultWallet].walletAddress == owner, InvalidVaultLink());
-
-            return erc721Contract.balanceOf(owner) + erc721Contract.balanceOf(vaultWallet);
-        }
-    }
-
-    function balanceOf(address contractAddress, address owner, uint256 id, address vaultWallet)
-        external
-        view
-        returns (uint256)
-    {
-        if (vaultWallet == address(0)) {
-            return _WARM_V1.balanceOf(contractAddress, owner, id);
-        } else {
-            IERC1155 erc1155Contract = IERC1155(contractAddress);
-            require(walletDelegations[vaultWallet].walletAddress == owner, InvalidVaultLink());
-
-            return erc1155Contract.balanceOf(owner, id) + erc1155Contract.balanceOf(vaultWallet, id);
-        }
-    }
-
-    function balanceOfBatch(
-        address contractAddress,
-        address[] calldata owners,
-        uint256[] calldata ids,
-        address[] calldata vaultWallets
-    ) external view returns (uint256[] memory) {
-        require(owners.length == ids.length && owners.length == vaultWallets.length, LengthMismatch());
-
-        IERC1155 erc1155Contract = IERC1155(contractAddress);
-        uint256[] memory balances = new uint256[](owners.length);
-
-        for (uint256 i = 0; i < owners.length; i++) {
-            address vaultWallet = vaultWallets[i];
-            address owner = owners[i];
-            uint256 id = ids[i];
-
-            if (vaultWallet == address(0)) {
-                balances[i] = _WARM_V1.balanceOf(contractAddress, owner, id);
-            } else {
-                require(walletDelegations[vaultWallet].walletAddress == owner, InvalidVaultLink());
-
-                balances[i] = erc1155Contract.balanceOf(owner, id) + erc1155Contract.balanceOf(vaultWallet, id);
-            }
-        }
-
-        return balances;
+        return withV1Fallback ? _WARM_V1.ownerOf(contractAddress, tokenId) : owner;
     }
 }

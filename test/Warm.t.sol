@@ -93,15 +93,14 @@ contract WarmTest is Test {
         assertEq(walletAddress, delegatedManager);
     }
 
-    function testWarmV1Fallback() public {
-        address coldWallet = 0x5C04911bA3a457De6FA0357b339220e4E034e8F7;
-        address hotWallet = 0x128BcA72459f8610Eb6AE25E3af071fC81039163;
+    function testWarmV1Fallback() public view {
+        address _hotWallet = 0x128BcA72459f8610Eb6AE25E3af071fC81039163;
         address bayc = 0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D;
         uint256 tokenId = 8903;
 
         // Check that the proxied owner matches the hot wallet from V1
-        address proxiedOwner = warm.ownerOf(bayc, tokenId);
-        assertEq(proxiedOwner, hotWallet);
+        address proxiedOwner = warm.ownerOf(bayc, tokenId, true);
+        assertEq(proxiedOwner, _hotWallet);
     }
 
     // === Contract Delegation Tests ===
@@ -127,7 +126,7 @@ contract WarmTest is Test {
         mockERC721.mint(coldWallet, 1);
 
         // Check that contract delegation works
-        address proxiedOwner = warm.ownerOf(address(mockERC721), 1);
+        address proxiedOwner = warm.ownerOf(address(mockERC721), 1, false);
         assertEq(proxiedOwner, contractDelegate);
     }
 
@@ -150,7 +149,7 @@ contract WarmTest is Test {
         mockERC721.mint(coldWallet, 1);
 
         // Check that token delegation works
-        address proxiedOwner = warm.ownerOf(address(mockERC721), 1);
+        address proxiedOwner = warm.ownerOf(address(mockERC721), 1, false);
         assertEq(proxiedOwner, tokenDelegate);
     }
 
@@ -187,15 +186,15 @@ contract WarmTest is Test {
         mockERC721.mint(coldWallet, 2);
 
         // Token #1 should be delegated to tokenDelegate
-        assertEq(warm.ownerOf(address(mockERC721), 1), tokenDelegate);
+        assertEq(warm.ownerOf(address(mockERC721), 1, false), tokenDelegate);
         
         // Token #2 should be delegated to contractDelegate
-        assertEq(warm.ownerOf(address(mockERC721), 2), contractDelegate);
+        assertEq(warm.ownerOf(address(mockERC721), 2, false), contractDelegate);
         
         // Different contract should use wallet-wide delegation
         MockERC721 differentMock = new MockERC721();
         differentMock.mint(coldWallet, 3);
-        assertEq(warm.ownerOf(address(differentMock), 3), hotWallet);
+        assertEq(warm.ownerOf(address(differentMock), 3, false), hotWallet);
     }
 
     function testExpiredDelegations() public {
@@ -222,7 +221,7 @@ contract WarmTest is Test {
         vm.warp(block.timestamp + 2 days);
 
         // Should return original owner when all delegations are expired
-        assertEq(warm.ownerOf(address(mockERC721), 1), coldWallet);
+        assertEq(warm.ownerOf(address(mockERC721), 1, false), coldWallet);
     }
 
     // === Revert Tests ===
