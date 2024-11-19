@@ -16,10 +16,10 @@ interface ImmutableCreate2Factory {
         returns (address deploymentAddress);
 }
 
-contract DeployScript is Script {
+contract Deploy is Script {
     ExclusiveDelegateResolver public resolver;
 
-    bytes32 salt = 0x0000000000000000000000000000000000000000eba2385ed09a4d00eb5ed4e5;
+    bytes32 salt = 0x0000000000000000000000000000000000000000a4029922c543aa0222d7803e;
 
     function setUp() public {}
 
@@ -27,10 +27,10 @@ contract DeployScript is Script {
         vm.startBroadcast();
 
         // deploy resolver
-        bytes memory resolverInitCode = abi.encodePacked(
-            type(ExclusiveDelegateResolver).creationCode
+        bytes memory resolverInitCode = abi.encodePacked(type(ExclusiveDelegateResolver).creationCode);
+        resolver = ExclusiveDelegateResolver(
+            ImmutableCreate2Factory(0x0000000000FFe8B47B3e2130213B802212439497).safeCreate2(salt, resolverInitCode)
         );
-        resolver = ExclusiveDelegateResolver(ImmutableCreate2Factory(0x0000000000FFe8B47B3e2130213B802212439497).safeCreate2(salt, resolverInitCode));
         vm.stopBroadcast();
 
         console2.logBytes32(keccak256(resolverInitCode));
