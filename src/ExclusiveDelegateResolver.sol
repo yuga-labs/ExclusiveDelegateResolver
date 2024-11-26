@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity 0.8.28;
 
 import {IDelegateRegistry} from "./interfaces/IDelegateRegistry.sol";
 
@@ -30,26 +30,8 @@ contract ExclusiveDelegateResolver {
         view
         returns (address owner)
     {
-        /// @solidity memory-safe-assembly
-        assembly {
-            // Set up memory for the call
-            let m := mload(0x40)
-            // Store ownerOf(uint256) selector
-            mstore(m, 0x6352211e00000000000000000000000000000000000000000000000000000000)
-            // Store tokenId argument
-            mstore(add(m, 0x04), tokenId)
-            // Make the staticcall
-            let success := staticcall(gas(), contractAddress, m, 0x24, m, 0x20)
-            // Check if call was successful
-            if iszero(success) {
-                mstore(0x00, 0x3204506f) // CallFailed()
-                revert(0x1c, 0x04)
-            }
-            // Load the returned owner address directly
-            owner := mload(m)
-        }
+        owner = _getOwner(contractAddress, tokenId);
 
-        // check delegate registry for outgoing delegations
         IDelegateRegistry.Delegation[] memory delegations =
             IDelegateRegistry(DELEGATE_REGISTRY).getOutgoingDelegations(owner);
 
@@ -63,11 +45,7 @@ contract ExclusiveDelegateResolver {
 
             if (_delegationMatchesRequest(delegation, contractAddress, tokenId, rights)) {
                 if (delegation.type_ > delegationToReturn.type_) {
-                    if (
-                        delegation.type_ == IDelegateRegistry.DelegationType.ERC721
-                            || delegation.type_ == IDelegateRegistry.DelegationType.ERC1155
-                            || delegation.type_ == IDelegateRegistry.DelegationType.ERC20
-                    ) {
+                    if (delegation.type_ == IDelegateRegistry.DelegationType.ERC721) {
                         return delegation.to;
                     }
 
@@ -87,20 +65,29 @@ contract ExclusiveDelegateResolver {
     ) internal pure returns (bool) {
         if (delegation.rights != rights) {
             return false;
-        }
-
-        if (delegation.type_ == IDelegateRegistry.DelegationType.ALL) {
+        } else if (delegation.type_ == IDelegateRegistry.DelegationType.ALL) {
             return true;
-        }
-
-        if (delegation.type_ == IDelegateRegistry.DelegationType.CONTRACT) {
+        } else if (delegation.type_ == IDelegateRegistry.DelegationType.CONTRACT) {
             return delegation.contract_ == contractAddress;
-        }
-
-        if (delegation.type_ == IDelegateRegistry.DelegationType.ERC721) {
+        } else if (delegation.type_ == IDelegateRegistry.DelegationType.ERC721) {
             return delegation.contract_ == contractAddress && delegation.tokenId == tokenId;
         }
 
         return false;
+    }
+
+    function _getOwner(address contractAddress, uint256 tokenId) internal view returns (address owner) {
+        /// @solidity memory-safe-assembly
+        assembly {
+            let m := mload(0x40)
+            mstore(m, 0x6352211e00000000000000000000000000000000000000000000000000000000)
+            mstore(add(m, 0x04), tokenId)
+            let success := staticcall(gas(), contractAddress, m, 0x24, m, 0x20)
+            if iszero(success) {
+                mstore(0x00, 0x3204506f) // CallFailed()
+                revert(0x1c, 0x04)
+            }
+            owner := mload(m)
+        }
     }
 }
