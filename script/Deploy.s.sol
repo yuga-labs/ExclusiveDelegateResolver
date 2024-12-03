@@ -19,7 +19,7 @@ interface ImmutableCreate2Factory {
 contract Deploy is Script {
     ExclusiveDelegateResolver public resolver;
 
-    bytes32 salt = 0x0000000000000000000000000000000000000000a4029922c543aa0222d7803e;
+    bytes32 salt = 0x00000000000000000000000000000000000000003a391ca2ec47aa02ffddcc88; // 0x000000000000F2aA95168C61B2230b07Eb6dB00f
 
     function setUp() public {}
 
