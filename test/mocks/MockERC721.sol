@@ -17,4 +17,4 @@ contract MockERC721 {
     function balanceOf(address owner) external view returns (uint256) {
         return _balances[owner];
     }
-} 
+}
