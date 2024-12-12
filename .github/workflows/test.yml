@@ -9,6 +9,9 @@ env:
   FOUNDRY_PROFILE: ci
 
 jobs:
+  test:
+    env:
+      MAINNET_RPC_URL: ${{ secrets.MAINNET_RPC_URL }}
   check:
     strategy:
       fail-fast: true
