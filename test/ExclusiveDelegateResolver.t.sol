@@ -4,13 +4,13 @@ pragma solidity ^0.8.28;
 import {Test} from "forge-std/Test.sol";
 import {ExclusiveDelegateResolver} from "../src/ExclusiveDelegateResolver.sol";
 import {MockERC721} from "./mocks/MockERC721.sol";
-import {MockERC1155} from "./mocks/MockERC1155.sol";
 import {IDelegateRegistry} from "../src/interfaces/IDelegateRegistry.sol";
 
 contract ExclusiveDelegateResolverTest is Test {
+    error CallFailed();
+
     ExclusiveDelegateResolver public resolver;
     MockERC721 public mockERC721;
-    MockERC1155 public mockERC1155;
     IDelegateRegistry public delegateRegistry;
 
     address public coldWallet;
@@ -23,9 +23,11 @@ contract ExclusiveDelegateResolverTest is Test {
     bytes32 public rightsWithPastExpiration;
 
     function setUp() public {
+        // fork mainnet at block 21388707
+        vm.createSelectFork("mainnet", 21388707);
+
         resolver = new ExclusiveDelegateResolver();
         mockERC721 = new MockERC721();
-        mockERC1155 = new MockERC1155();
         delegateRegistry = IDelegateRegistry(0x00000000000000447e69651d841bD8D104Bed493);
 
         rightsWithFutureExpiration = resolver.generateRightsWithExpiration(RIGHTS, FUTURE_EXPIRATION);
@@ -73,6 +75,67 @@ contract ExclusiveDelegateResolverTest is Test {
         // Verify delegation works for any token in the contract
         address proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, bytes24(RIGHTS));
         assertEq(proxiedOwner, hotWallet);
+    }
+
+    function testRightsDelegationOutranksGlobalDelegation() public {
+        uint256 tokenId = 1;
+
+        // Mint token to cold wallet
+        mockERC721.mint(coldWallet, tokenId);
+
+        // Set rights delegation
+        vm.prank(coldWallet);
+        delegateRegistry.delegateERC721(hotWallet, address(mockERC721), tokenId, rightsWithFutureExpiration, true);
+
+        // Set global delegation after so that it is newer
+        bytes32 globalDelegation = resolver.generateRightsWithExpiration(bytes24(0), FUTURE_EXPIRATION);
+
+        vm.prank(coldWallet);
+        delegateRegistry.delegateERC721(
+            makeAddr("GLOBAL_DELEGATE"), address(mockERC721), tokenId, globalDelegation, true
+        );
+
+        // Rights delegation should take priority
+        address proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, RIGHTS);
+        assertEq(proxiedOwner, hotWallet);
+    }
+
+    function testMostRecentDelegationOutranksOlderDelegationWithMatchingSpecificityAndRights() public {
+        uint256 tokenId = 1;
+        address firstDelegate = makeAddr("firstDelegate");
+        address secondDelegate = makeAddr("secondDelegate");
+
+        // Mint token to cold wallet
+        mockERC721.mint(coldWallet, tokenId);
+
+        vm.startPrank(coldWallet);
+
+        // Set first ERC721 delegation
+        delegateRegistry.delegateERC721(firstDelegate, address(mockERC721), tokenId, rightsWithFutureExpiration, true);
+
+        // Set second ERC721 delegation for same token
+        delegateRegistry.delegateERC721(secondDelegate, address(mockERC721), tokenId, rightsWithFutureExpiration, true);
+
+        vm.stopPrank();
+
+        // Should return second delegate since it was most recent
+        address proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, bytes24(RIGHTS));
+        assertEq(proxiedOwner, secondDelegate);
+
+        // Also test with CONTRACT level delegations
+        vm.startPrank(coldWallet);
+
+        // Set first CONTRACT delegation
+        delegateRegistry.delegateContract(firstDelegate, address(mockERC721), rightsWithFutureExpiration, true);
+
+        // Set second CONTRACT delegation
+        delegateRegistry.delegateContract(secondDelegate, address(mockERC721), rightsWithFutureExpiration, true);
+
+        vm.stopPrank();
+
+        // Should return second delegate
+        proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, bytes24(RIGHTS));
+        assertEq(proxiedOwner, secondDelegate);
     }
 
     function testDelegationPriority() public {
@@ -190,28 +253,6 @@ contract ExclusiveDelegateResolverTest is Test {
         assertEq(proxiedOwner, hotWallet);
     }
 
-    function testRightsDelegationOutranksGlobalDelegation() public {
-        uint256 tokenId = 1;
-
-        // Mint token to cold wallet
-        mockERC721.mint(coldWallet, tokenId);
-
-        // Set rights delegation
-        vm.prank(coldWallet);
-        delegateRegistry.delegateERC721(hotWallet, address(mockERC721), tokenId, rightsWithFutureExpiration, true);
-
-        // Set global delegation after so that it is newer
-        bytes32 globalDelegation = resolver.generateRightsWithExpiration(bytes24(0), FUTURE_EXPIRATION);
-
-        vm.prank(coldWallet);
-        delegateRegistry.delegateERC721(makeAddr("GLOBAL_DELEGATE"), address(mockERC721), tokenId, globalDelegation, true);
-
-
-        // Rights delegation should take priority
-        address proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, RIGHTS);
-        assertEq(proxiedOwner, hotWallet);
-    }
-
     function testIgnoresExpiredDelegations() public {
         uint256 tokenId = 1;
 
@@ -220,9 +261,7 @@ contract ExclusiveDelegateResolverTest is Test {
 
         // Set delegation with expired rights
         vm.prank(coldWallet);
-        delegateRegistry.delegateERC721(
-            hotWallet, address(mockERC721), tokenId, rightsWithPastExpiration, true
-        );
+        delegateRegistry.delegateERC721(hotWallet, address(mockERC721), tokenId, rightsWithPastExpiration, true);
 
         // Should return coldWallet since delegation has expired
         address proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, RIGHTS);
@@ -244,41 +283,11 @@ contract ExclusiveDelegateResolverTest is Test {
         assertEq(proxiedOwner, coldWallet);
     }
 
-    function testMostRecentDelegationWins() public {
-        uint256 tokenId = 1;
-        address firstDelegate = makeAddr("firstDelegate");
-        address secondDelegate = makeAddr("secondDelegate");
+    function testRevert_OwnerOfCallFailed() public {
+        uint256 tokenId = 10_001; // one higher than the highest token id in the bayc contract
+        address bayc = 0xBC4CA0EdA7647A8aB7C2061c2E118A18a936f13D;
 
-        // Mint token to cold wallet
-        mockERC721.mint(coldWallet, tokenId);
-
-        vm.startPrank(coldWallet);
-
-        // Set first ERC721 delegation
-        delegateRegistry.delegateERC721(firstDelegate, address(mockERC721), tokenId, rightsWithFutureExpiration, true);
-
-        // Set second ERC721 delegation for same token
-        delegateRegistry.delegateERC721(secondDelegate, address(mockERC721), tokenId, rightsWithFutureExpiration, true);
-
-        vm.stopPrank();
-
-        // Should return second delegate since it was most recent
-        address proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, bytes24(RIGHTS));
-        assertEq(proxiedOwner, secondDelegate);
-
-        // Also test with CONTRACT level delegations
-        vm.startPrank(coldWallet);
-
-        // Set first CONTRACT delegation
-        delegateRegistry.delegateContract(firstDelegate, address(mockERC721), rightsWithFutureExpiration, true);
-
-        // Set second CONTRACT delegation
-        delegateRegistry.delegateContract(secondDelegate, address(mockERC721), rightsWithFutureExpiration, true);
-
-        vm.stopPrank();
-
-        // Should return second delegate
-        proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, bytes24(RIGHTS));
-        assertEq(proxiedOwner, secondDelegate);
+        vm.expectRevert(CallFailed.selector);
+        resolver.exclusiveOwnerByRights(bayc, tokenId, RIGHTS);
     }
 }
