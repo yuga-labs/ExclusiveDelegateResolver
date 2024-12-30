@@ -24,6 +24,47 @@ contract ExclusiveDelegateResolver {
     bytes24 public constant GLOBAL_DELEGATION = bytes24(0);
 
     /**
+     * @notice Gets an exclusive wallet delegation, resolved through delegatexyz if possible
+     * @param vault The vault address
+     * @param rights The rights to check
+     * @return owner The vault wallet address or delegated wallet if one exists
+     * @notice returns the most recent delegation that matches the rights for an entire wallet delegation
+     * (type ALL) if multiple delegations of the same specificity match the rights, the most recent one is respected.
+     * If no delegation matches the rights, global delegations (bytes24(0) are considered,
+     * but MUST have an expiration greater than 0 to avoid conflicts with pre-existing delegations.
+     * If no delegation matches the rights and there are no empty delegations, the owner is returned.
+     * Expirations are supported by extracting a uint40 from the final 40 bits of a given delegation's rights value.
+     * If the expiration is past, the delegation is not considered to match the request.
+     */
+    function exclusiveWalletByRights(address vault, bytes24 rights) external view returns (address) {
+        IDelegateRegistry.Delegation[] memory delegations =
+            IDelegateRegistry(DELEGATE_REGISTRY).getOutgoingDelegations(vault);
+
+        IDelegateRegistry.Delegation memory delegationToReturn;
+
+        for (uint256 i = delegations.length; i > 0;) {
+            unchecked {
+                --i;
+            }
+            IDelegateRegistry.Delegation memory delegation = delegations[i];
+
+            if (_delegationMatchesRequest(delegation, rights)) {
+                if (_delegationOutranksCurrent(delegationToReturn, delegation)) {
+                    // re-check rights here to ensure global delegation does not get early returned
+                    if (
+                        delegation.type_ == IDelegateRegistry.DelegationType.ALL && bytes24(delegation.rights) == rights
+                    ) {
+                        return delegation.to;
+                    }
+                    delegationToReturn = delegation;
+                }
+            }
+        }
+
+        return delegationToReturn.to == address(0) ? vault : delegationToReturn.to;
+    }
+
+    /**
      * @notice Gets the owner of an ERC721 token, resolved through delegatexyz if possible
      * @param contractAddress The ERC721 contract address
      * @param tokenId The token ID to check
@@ -99,6 +140,24 @@ contract ExclusiveDelegateResolver {
     {
         uint256 rights = uint256(uint192(rightsIdentifier)) << 64;
         return bytes32(rights | uint256(expiration));
+    }
+
+    function _delegationMatchesRequest(IDelegateRegistry.Delegation memory delegation, bytes24 rights)
+        internal
+        view
+        returns (bool)
+    {
+        (bytes24 rightsIdentifier, uint40 expiration) = decodeRightsExpiration(delegation.rights);
+
+        if (block.timestamp > expiration) {
+            return false;
+        } else if (rightsIdentifier != rights && rightsIdentifier != GLOBAL_DELEGATION) {
+            return false;
+        } else if (delegation.type_ == IDelegateRegistry.DelegationType.ALL) {
+            return true;
+        } else {
+            return false;
+        }
     }
 
     function _delegationMatchesRequest(
