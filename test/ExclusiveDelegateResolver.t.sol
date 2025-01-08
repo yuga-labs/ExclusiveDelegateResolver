@@ -15,6 +15,8 @@ contract ExclusiveDelegateResolverTest is Test {
 
     address public coldWallet;
     address public hotWallet;
+    address public additionalDelegatee1;
+    address public additionalDelegatee2;
     bytes24 public constant RIGHTS = bytes24(keccak256("NFT_SHADOW"));
     uint40 public constant FUTURE_EXPIRATION = type(uint40).max;
     uint40 public constant PAST_EXPIRATION = 1;
@@ -35,6 +37,8 @@ contract ExclusiveDelegateResolverTest is Test {
 
         hotWallet = makeAddr("hotWallet");
         coldWallet = makeAddr("coldWallet");
+        additionalDelegatee1 = makeAddr("additionalDelegatee1");
+        additionalDelegatee2 = makeAddr("additionalDelegatee2");
     }
 
     function testERC721Delegation() public {
@@ -75,6 +79,37 @@ contract ExclusiveDelegateResolverTest is Test {
         // Verify delegation works for any token in the contract
         address proxiedOwner = resolver.exclusiveOwnerByRights(address(mockERC721), tokenId, bytes24(RIGHTS));
         assertEq(proxiedOwner, hotWallet);
+    }
+
+    function testExclusiveWalletByRights() public {
+        // Set global delegation after so that it is newer
+        bytes32 delegation = resolver.generateRightsWithExpiration(RIGHTS, FUTURE_EXPIRATION);
+
+        vm.prank(coldWallet);
+        delegateRegistry.delegateAll(hotWallet, delegation, true);
+
+        assertEq(hotWallet, resolver.exclusiveWalletByRights(coldWallet, RIGHTS));
+    }
+
+    function testDelegatedWalletsByRights() public {
+        bytes32 delegation = resolver.generateRightsWithExpiration(RIGHTS, FUTURE_EXPIRATION);
+
+        vm.prank(coldWallet);
+        delegateRegistry.delegateAll(hotWallet, delegation, true);
+
+        vm.prank(additionalDelegatee1);
+        delegateRegistry.delegateAll(hotWallet, delegation, true);
+
+        vm.prank(additionalDelegatee2);
+        delegateRegistry.delegateAll(hotWallet, delegation, true);
+
+        vm.prank(coldWallet);
+        delegateRegistry.delegateAll(additionalDelegatee1, delegation, true);
+
+        address[] memory delegatedWallets = resolver.delegatedWalletsByRights(hotWallet, RIGHTS);
+        assertEq(delegatedWallets.length, 2);
+        assertEq(delegatedWallets[0], additionalDelegatee1);
+        assertEq(delegatedWallets[1], additionalDelegatee2);
     }
 
     function testRightsDelegationOutranksGlobalDelegation() public {

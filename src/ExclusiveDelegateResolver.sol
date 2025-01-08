@@ -36,7 +36,7 @@ contract ExclusiveDelegateResolver {
      * Expirations are supported by extracting a uint40 from the final 40 bits of a given delegation's rights value.
      * If the expiration is past, the delegation is not considered to match the request.
      */
-    function exclusiveWalletByRights(address vault, bytes24 rights) external view returns (address) {
+    function exclusiveWalletByRights(address vault, bytes24 rights) public view returns (address) {
         IDelegateRegistry.Delegation[] memory delegations =
             IDelegateRegistry(DELEGATE_REGISTRY).getOutgoingDelegations(vault);
 
@@ -62,6 +62,48 @@ contract ExclusiveDelegateResolver {
         }
 
         return delegationToReturn.to == address(0) ? vault : delegationToReturn.to;
+    }
+
+    /**
+     * @notice Gets all wallets that have delegated to a given wallet
+     * @param wallet The wallet to check
+     * @param rights The rights to check
+     * @return wallets The wallets that have delegated to the given wallet
+     * @notice returns all wallets that have delegated to the given wallet, filtered by the rights
+     * if multiple delegations of the same specificity match the rights, the most recent one is respected.
+     * If no delegation matches the rights, global delegations (bytes24(0)) are considered,
+     * but MUST have an expiration greater than 0 to avoid conflicts with pre-existing delegations.
+     * Expirations are supported by extracting a uint40 from the final 40 bits of a given delegation's rights value.
+     * If the expiration is past, the delegation is not considered to match the request.
+     */
+    function delegatedWalletsByRights(address wallet, bytes24 rights) external view returns (address[] memory) {
+        IDelegateRegistry.Delegation[] memory delegations =
+            IDelegateRegistry(DELEGATE_REGISTRY).getIncomingDelegations(wallet);
+
+        uint256 matchesCount = 0;
+        bool[] memory matches = new bool[](delegations.length);
+
+        for (uint256 i; i < delegations.length; ++i) {
+            IDelegateRegistry.Delegation memory delegation = delegations[i];
+
+            if (_delegationMatchesRequest(delegation, rights)) {
+                if (exclusiveWalletByRights(delegation.from, rights) == wallet) {
+                    matches[i] = true;
+                    matchesCount++;
+                }
+            }
+        }
+
+        address[] memory matchesArray = new address[](matchesCount);
+        uint256 matchesIndex = 0;
+        // filter to the delegated wallets that match the request
+        for (uint256 i; i < delegations.length; ++i) {
+            if (matches[i]) {
+                matchesArray[matchesIndex] = delegations[i].from;
+                matchesIndex++;
+            }
+        }
+        return matchesArray;
     }
 
     /**
