@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {ExclusiveDelegateResolver} from "../src/ExclusiveDelegateResolver.sol";
 import {MockERC721} from "./mocks/MockERC721.sol";
 import {IDelegateRegistry} from "../src/interfaces/IDelegateRegistry.sol";
+import {IExclusiveDelegateResolver} from "../src/IExclusiveDelegateResolver.sol";
 
 contract ExclusiveDelegateResolverTest is Test {
     error CallFailed();
@@ -326,5 +327,18 @@ contract ExclusiveDelegateResolverTest is Test {
 
         vm.expectRevert(CallFailed.selector);
         resolver.exclusiveOwnerByRights(bayc, tokenId, RIGHTS);
+    }
+
+    function testInterface() public {
+        assertEq(IExclusiveDelegateResolver.DELEGATE_REGISTRY.selector, resolver.DELEGATE_REGISTRY.selector);
+        assertEq(IExclusiveDelegateResolver.GLOBAL_DELEGATION.selector, resolver.GLOBAL_DELEGATION.selector);
+        assertEq(IExclusiveDelegateResolver.exclusiveWalletByRights.selector, resolver.exclusiveWalletByRights.selector);
+        assertEq(IExclusiveDelegateResolver.delegatedWalletsByRights.selector, resolver.delegatedWalletsByRights.selector);
+        assertEq(IExclusiveDelegateResolver.exclusiveOwnerByRights.selector, resolver.exclusiveOwnerByRights.selector);
+        assertEq(IExclusiveDelegateResolver.decodeRightsExpiration.selector, resolver.decodeRightsExpiration.selector);
+        assertEq(IExclusiveDelegateResolver.generateRightsWithExpiration.selector, resolver.generateRightsWithExpiration.selector);
+
+        assertEq(IExclusiveDelegateResolver(address(resolver)).DELEGATE_REGISTRY(), resolver.DELEGATE_REGISTRY());
+        assertEq(IExclusiveDelegateResolver(address(resolver)).GLOBAL_DELEGATION(), resolver.GLOBAL_DELEGATION());
     }
 }
