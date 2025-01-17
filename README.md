@@ -10,6 +10,9 @@ This contract is designed to be used in conjunction with a delegate registry to 
 
 The resolver is deployed at the following addresses:
 
+ - Ethereum: 0x0000000000007129AF73C46C9F01a3fB4FF61A02
+ - Base: 0x0000000000007129AF73C46C9F01a3fB4FF61A02
+ - ApeChain: 0x0000000000007129AF73C46C9F01a3fB4FF61A02
 
 Don't see your chain? Feel free to deploy your own!
 
@@ -19,13 +22,15 @@ Deploys on EVM equivalent chains can be run with the following command on any ch
 $ forge script DeployEVM --rpc-url <your_rpc_url> --private-key <your_private_key>
 ```
 
-The Resolver will be deployed at ``.
+The Resolver will be deployed at `0x0000000000007129AF73C46C9F01a3fB4FF61A02`.
 
-If your chain does not have EVM equivalence, run the custom deploy script with a salt of your choice:
+For ZkEVM, run the ZkEVM variant:
 
 ```shell
-$ forge script DeployZkEVM --rpc-url <your_rpc_url> --private-key <your_private_key> --sig "run(address,bytes32)" <your_delegate_registry_address> <your_salt>
+$ forge script DeployZkEVM --rpc-url <your_rpc_url> --private-key <your_private_key> 
 ```
+
+The Resolver will be deployed at `0x0000000078CC4Cc1C14E27c0fa35ED6E5E58825D`.
 
 ### Test
 

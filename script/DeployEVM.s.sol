@@ -19,7 +19,7 @@ interface ImmutableCreate2Factory {
 contract DeployEVM is Script {
     ExclusiveDelegateResolver public resolver;
 
-    bytes32 salt = 0x00000000000000000000000000000000000000003a391ca2ec47aa02ffddcc88;
+    bytes32 salt = 0x0000000000000000000000000000000000000000338b25608f028e03241e3b33; // 0x0000000000007129AF73C46C9F01a3fB4FF61A02
     address delegateRegistryAddress = 0x00000000000000447e69651d841bD8D104Bed493;
 
     function setUp() public {}
