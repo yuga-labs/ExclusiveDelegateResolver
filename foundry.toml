@@ -6,4 +6,7 @@ libs = ["lib"]
 [rpc_endpoints]
 mainnet = "${MAINNET_RPC_URL}"
 
+[profile.default.zksync]
+zksolc = "1.5.7"
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

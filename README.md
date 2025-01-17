@@ -10,22 +10,22 @@ This contract is designed to be used in conjunction with a delegate registry to 
 
 The resolver is deployed at the following addresses:
 
-- Ethereum Mainnet: `0x000000000000F2aA95168C61B2230b07Eb6dB00f`
-- ApeChain Mainnet: `0x000000000000F2aA95168C61B2230b07Eb6dB00f`
-- Arbitrum Sepolia: `0x000000000000F2aA95168C61B2230b07Eb6dB00f`
-- Base Sepolia: `0x000000000000F2aA95168C61B2230b07Eb6dB00f`
 
 Don't see your chain? Feel free to deploy your own!
 
-Deploys can be run with the following command on any chain the canonical ImmutableCreate2Factory and DelegateCash are deployed:
+Deploys on EVM equivalent chains can be run with the following command on any chain the canonical ImmutableCreate2Factory and Delegatexyz are deployed:
 
 ```shell
-$ forge script Deploy --rpc-url <your_rpc_url> --private-key <your_private_key>
+$ forge script DeployEVM --rpc-url <your_rpc_url> --private-key <your_private_key>
 ```
 
-The Resolver will be deployed at `0x000000000000F2aA95168C61B2230b07Eb6dB00f` assuming EVM equivalence.
+The Resolver will be deployed at ``.
 
-If your chain does not have EVM equivalence, make sure to edit the address for DelegateCash in `src/ExclusiveDelegateResolver.sol`, and for ImmutableCreate2Factory in `script/Deploy.s.sol`.
+If your chain does not have EVM equivalence, run the custom deploy script with a salt of your choice:
+
+```shell
+$ forge script DeployZkEVM --rpc-url <your_rpc_url> --private-key <your_private_key> --sig "run(address,bytes32)" <your_delegate_registry_address> <your_salt>
+```
 
 ### Test
 

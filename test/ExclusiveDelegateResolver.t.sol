@@ -24,13 +24,15 @@ contract ExclusiveDelegateResolverTest is Test {
     bytes32 public rightsWithFutureExpiration;
     bytes32 public rightsWithPastExpiration;
 
+    address public delegateRegistryAddress = 0x00000000000000447e69651d841bD8D104Bed493;
+
     function setUp() public {
         // fork mainnet at block 21388707
         vm.createSelectFork("mainnet", 21388707);
 
-        resolver = new ExclusiveDelegateResolver();
+        resolver = new ExclusiveDelegateResolver(delegateRegistryAddress);
         mockERC721 = new MockERC721();
-        delegateRegistry = IDelegateRegistry(0x00000000000000447e69651d841bD8D104Bed493);
+        delegateRegistry = IDelegateRegistry(delegateRegistryAddress);
 
         rightsWithFutureExpiration = resolver.generateRightsWithExpiration(RIGHTS, FUTURE_EXPIRATION);
         rightsWithPastExpiration = resolver.generateRightsWithExpiration(RIGHTS, PAST_EXPIRATION);

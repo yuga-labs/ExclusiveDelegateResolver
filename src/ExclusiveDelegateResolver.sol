@@ -18,10 +18,14 @@ import {IDelegateRegistry} from "./interfaces/IDelegateRegistry.sol";
  */
 contract ExclusiveDelegateResolver {
     /// @dev The address of the Delegate Registry contract
-    address public constant DELEGATE_REGISTRY = 0x00000000000000447e69651d841bD8D104Bed493;
+    address public immutable DELEGATE_REGISTRY;
 
     /// @dev The rights value for a global delegation. These are considered only if no delegation by rights matches the request.
     bytes24 public constant GLOBAL_DELEGATION = bytes24(0);
+
+    constructor(address delegateRegistry) {
+        DELEGATE_REGISTRY = delegateRegistry;
+    }
 
     /**
      * @notice Gets an exclusive wallet delegation, resolved through delegatexyz if possible

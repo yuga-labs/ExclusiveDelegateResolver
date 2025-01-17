@@ -16,23 +16,18 @@ interface ImmutableCreate2Factory {
         returns (address deploymentAddress);
 }
 
-contract Deploy is Script {
+contract DeployZkEVM is Script {
     ExclusiveDelegateResolver public resolver;
-
-    bytes32 salt = 0x00000000000000000000000000000000000000003a391ca2ec47aa02ffddcc88; // 0x000000000000F2aA95168C61B2230b07Eb6dB00f
 
     function setUp() public {}
 
-    function run() public {
+    function run(address delegateRegistryAddress, bytes32 salt) public {
         vm.startBroadcast();
 
         // deploy resolver
-        bytes memory resolverInitCode = abi.encodePacked(type(ExclusiveDelegateResolver).creationCode);
-        resolver = ExclusiveDelegateResolver(
-            ImmutableCreate2Factory(0x0000000000FFe8B47B3e2130213B802212439497).safeCreate2(salt, resolverInitCode)
-        );
+        resolver = new ExclusiveDelegateResolver{salt: salt}(delegateRegistryAddress);
         vm.stopBroadcast();
 
-        console2.logBytes32(keccak256(resolverInitCode));
+        console2.log("Resolver deployed at:", address(resolver));
     }
 }
