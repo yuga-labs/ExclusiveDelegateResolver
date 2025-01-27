@@ -13,6 +13,7 @@ The resolver is deployed at the following addresses:
  - Ethereum: 0x0000000000007129AF73C46C9F01a3fB4FF61A02
  - Base: 0x0000000000007129AF73C46C9F01a3fB4FF61A02
  - ApeChain: 0x0000000000007129AF73C46C9F01a3fB4FF61A02
+ - Abstract: 0x0000000078CC4Cc1C14E27c0fa35ED6E5E58825D
 
 Don't see your chain? Feel free to deploy your own!
 
